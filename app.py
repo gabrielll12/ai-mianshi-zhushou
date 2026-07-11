@@ -80,11 +80,16 @@ class 方舟Embedding(Embeddings):
             "input": [{"type": "text", "text": 文本}],
         }
         resp = requests.post(self.接口地址, headers=self.headers, json=payload, timeout=30)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # 把火山返回的错误原文抛出来,方便定位(404/401/400 各有不同 message)
+            raise RuntimeError(
+                f"向量化请求失败 HTTP {resp.status_code},接口={self.接口地址},"
+                f"接入点={self.接入点},返回={resp.text[:500]}"
+            )
         data = resp.json()
-        # 多模态接口:整个 input(可含多片段)融合成一个向量,放在 data["data"]["embedding"]
-        emb = data["data"]["embedding"]
-        # 兼容极少数返回成 [[...]] 嵌套一层的情况
+        # 返回结构:{"data": [ {"object":"embedding", "embedding": [[...]]} ]}
+        emb = data["data"][0]["embedding"]
+        # embedding 可能是双层数组 [[...]],取内层那一维
         if emb and isinstance(emb[0], list):
             emb = emb[0]
         return emb
