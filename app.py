@@ -45,7 +45,7 @@ client = OpenAI(
 #         因为控制台当前只能申请到 vision 版本。它的调用接口与纯文本 Embedding
 #         不同(专用路径 + input 需包成 {"type":"text","text":...} 格式),
 #         下面的 方舟Embedding 类已做适配。填你自己的 ep- 开头接入点 ID(不是密码)。
-向量化接入点ID = "ep-20260711105724-q6sl5"
+向量化接入点ID = "在这里填入你的_Embedding_接入点ID"
 
 # 火山引擎方舟基础地址(与文本生成同一个 base_url)
 方舟基础地址 = "https://ark.cn-beijing.volces.com/api/v3"
@@ -382,6 +382,16 @@ def 面试助手(question, k=5, 阈值=1.1):
     border-radius: 24px !important;
     box-shadow: 0 10px 32px rgba(150,120,200,0.15), inset 0 1px 1px rgba(255,255,255,0.9);
     animation: 卡片渐入 0.7s ease both; animation-delay:0.3s;
+}
+/* 兜底:把聊天框内部所有容器背景透明化,防止新版 Gradio 的深色默认底色透出来。
+   只针对"容器层",气泡(.user/.bot)在后面单独上色,不受影响。 */
+#聊天区 .wrapper,
+#聊天区 .bubble-wrap,
+#聊天区 .message-wrap,
+#聊天区 [class*="chatbot"],
+#聊天区 > div,
+#聊天区 > div > div {
+    background: transparent !important;
 }
 #聊天区 .label-wrap, #聊天区 label { display:none !important; }
 #聊天区 .message.user, #聊天区 .user {
