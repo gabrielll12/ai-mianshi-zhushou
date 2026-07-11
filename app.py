@@ -14,6 +14,7 @@ AI 面试题库问答助手 —— 基于真实面经的 RAG 问答应用
 
 import os
 import re
+import requests
 import gradio as gr
 from openai import OpenAI
 from langchain_community.vectorstores import FAISS
@@ -40,40 +41,61 @@ client = OpenAI(
 接入点ID = "ep-m-20260702163039-m4qs7"
 
 # 向量化(Embedding)接入点 ID —— 走火山引擎云端 API,不在本机加载大模型。
-# 【重要】请去火山引擎方舟控制台创建一个 Embedding 接入点(如 doubao-embedding),
-#         把它的 ep- 开头 ID 填到下面。它同样不是密码,可公开。
-向量化接入点ID = "ep-20260711105724-q6sl5"
+# 【重要】这里用的是「多模态」Embedding 接入点(doubao-embedding-vision 系列),
+#         因为控制台当前只能申请到 vision 版本。它的调用接口与纯文本 Embedding
+#         不同(专用路径 + input 需包成 {"type":"text","text":...} 格式),
+#         下面的 方舟Embedding 类已做适配。填你自己的 ep- 开头接入点 ID(不是密码)。
+向量化接入点ID = "在这里填入你的_Embedding_接入点ID"
+
+# 火山引擎方舟基础地址(与文本生成同一个 base_url)
+方舟基础地址 = "https://ark.cn-beijing.volces.com/api/v3"
 
 
 # ------------------------------------------------------------
-# 云端向量化封装:调用火山引擎方舟 Embedding API
+# 云端向量化封装:调用火山引擎方舟「多模态」Embedding API
 # 为什么这样做:线上部署(Render 免费版仅 512MB 内存)加载本地
-# BAAI/bge 模型会内存溢出被杀掉。改成云端 API 后本机几乎不占内存,
-# 向量化在云端算 —— 资源约束下的工程权衡。
+# BAAI/bge 模型会内存溢出被杀掉。改成云端 API 后本机几乎不占内存。
+#
+# 注意:doubao-embedding-vision 系列是多模态模型,不能用标准的
+# /embeddings 路径(会报 "does not support this api"),必须用专用的
+# /embeddings/multimodal 路径,且 input 要包成 [{"type":"text","text":...}]。
+# 这里我们只喂纯文本,所以每条文本包一个 text 片段、逐条向量化。
 # ------------------------------------------------------------
 class 方舟Embedding(Embeddings):
-    """让 LangChain/FAISS 通过火山引擎方舟 API 完成向量化。"""
+    """让 LangChain/FAISS 通过火山引擎方舟「多模态 Embedding」API 完成向量化。"""
 
-    def __init__(self, 客户端, 接入点):
-        self.客户端 = 客户端
+    def __init__(self, api_key, 基础地址, 接入点):
+        self.api_key = api_key
+        self.接口地址 = 基础地址.rstrip("/") + "/embeddings/multimodal"
         self.接入点 = 接入点
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
 
-    def _向量化(self, 文本列表):
-        # 火山引擎 Embedding 接口一次可批量处理多条文本
-        resp = self.客户端.embeddings.create(model=self.接入点, input=文本列表)
-        return [item.embedding for item in resp.data]
+    def _单条向量(self, 文本):
+        """把一条文本发给多模态接口,取回它的向量。"""
+        payload = {
+            "model": self.接入点,
+            "input": [{"type": "text", "text": 文本}],
+        }
+        resp = requests.post(self.接口地址, headers=self.headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        # 多模态接口:整个 input(可含多片段)融合成一个向量,放在 data["data"]["embedding"]
+        emb = data["data"]["embedding"]
+        # 兼容极少数返回成 [[...]] 嵌套一层的情况
+        if emb and isinstance(emb[0], list):
+            emb = emb[0]
+        return emb
 
     def embed_documents(self, texts):
-        # 建库时批量向量化;分批发送,避免单次请求过大
-        向量 = []
-        批大小 = 32
-        for i in range(0, len(texts), 批大小):
-            向量.extend(self._向量化(texts[i:i + 批大小]))
-        return 向量
+        # 建库时:逐条向量化(多模态接口按"一次一条内容"设计)
+        return [self._单条向量(t) for t in texts]
 
     def embed_query(self, text):
-        # 查询时单条向量化
-        return self._向量化([text])[0]
+        # 查询时:单条向量化
+        return self._单条向量(text)
 
 # ============================================================
 # 二、读取面经 → 切分 → 向量化 → 建 FAISS 索引
@@ -116,8 +138,8 @@ def 载入并构建知识库():
 
     print(f"✅ 切分完成,共 {len(chunks)} 个知识块。正在通过云端 API 向量化...")
 
-    # 向量化:调用火山引擎方舟 Embedding API(云端算,本机不占内存)
-    embeddings = 方舟Embedding(client, 向量化接入点ID)
+    # 向量化:调用火山引擎方舟多模态 Embedding API(云端算,本机不占内存)
+    embeddings = 方舟Embedding(API_KEY, 方舟基础地址, 向量化接入点ID)
 
     print("✅ 向量化完成,正在建立向量库...")
     vs = FAISS.from_texts(chunks, embeddings)
