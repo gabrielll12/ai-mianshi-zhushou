@@ -16,8 +16,8 @@ import os
 import re
 import gradio as gr
 from openai import OpenAI
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_core.embeddings import Embeddings
 
 # ============================================================
 # 一、初始化大模型客户端(火山引擎方舟 · DeepSeek)
@@ -38,6 +38,42 @@ client = OpenAI(
 
 # DeepSeek 推理接入点 ID(ep- 开头,不是密码,可公开)
 接入点ID = "ep-m-20260702163039-m4qs7"
+
+# 向量化(Embedding)接入点 ID —— 走火山引擎云端 API,不在本机加载大模型。
+# 【重要】请去火山引擎方舟控制台创建一个 Embedding 接入点(如 doubao-embedding),
+#         把它的 ep- 开头 ID 填到下面。它同样不是密码,可公开。
+向量化接入点ID = "ep-20260711105724-q6sl5"
+
+
+# ------------------------------------------------------------
+# 云端向量化封装:调用火山引擎方舟 Embedding API
+# 为什么这样做:线上部署(Render 免费版仅 512MB 内存)加载本地
+# BAAI/bge 模型会内存溢出被杀掉。改成云端 API 后本机几乎不占内存,
+# 向量化在云端算 —— 资源约束下的工程权衡。
+# ------------------------------------------------------------
+class 方舟Embedding(Embeddings):
+    """让 LangChain/FAISS 通过火山引擎方舟 API 完成向量化。"""
+
+    def __init__(self, 客户端, 接入点):
+        self.客户端 = 客户端
+        self.接入点 = 接入点
+
+    def _向量化(self, 文本列表):
+        # 火山引擎 Embedding 接口一次可批量处理多条文本
+        resp = self.客户端.embeddings.create(model=self.接入点, input=文本列表)
+        return [item.embedding for item in resp.data]
+
+    def embed_documents(self, texts):
+        # 建库时批量向量化;分批发送,避免单次请求过大
+        向量 = []
+        批大小 = 32
+        for i in range(0, len(texts), 批大小):
+            向量.extend(self._向量化(texts[i:i + 批大小]))
+        return 向量
+
+    def embed_query(self, text):
+        # 查询时单条向量化
+        return self._向量化([text])[0]
 
 # ============================================================
 # 二、读取面经 → 切分 → 向量化 → 建 FAISS 索引
@@ -78,15 +114,12 @@ def 载入并构建知识库():
                 chunk_text = f"【来源:{filename}】\n{header}\n\n{qa}"
                 chunks.append(chunk_text)
 
-    print(f"✅ 切分完成,共 {len(chunks)} 个知识块。正在加载向量模型(首次较慢)...")
+    print(f"✅ 切分完成,共 {len(chunks)} 个知识块。正在通过云端 API 向量化...")
 
-    # 向量化:免费的中文 Embedding 模型
-    embeddings = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-small-zh-v1.5",
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    # 向量化:调用火山引擎方舟 Embedding API(云端算,本机不占内存)
+    embeddings = 方舟Embedding(client, 向量化接入点ID)
 
-    print("✅ 向量模型加载完成,正在建立向量库...")
+    print("✅ 向量化完成,正在建立向量库...")
     vs = FAISS.from_texts(chunks, embeddings)
     print(f"🎉 知识库构建完成,已收录 {len(chunks)} 个知识块。")
     return vs
@@ -135,7 +168,10 @@ def 查询理解(question, history=None):
 
 
 def 面试助手(question, k=5, 阈值=1.1):
-    """RAG 主流程:查询理解 → 检索 + 阈值过滤 → 拼历史 → DeepSeek 生成分层回答。"""
+    """RAG 主流程:查询理解 → 检索 + 阈值过滤 → 拼历史 → DeepSeek 生成分层回答。
+    ⚠️ 注意:阈值 1.1 是当初用本地 bge 模型采样定的。换成云端 Embedding 后
+    分数分布可能变化,若发现「什么都检索不到」或「无关内容混入」,
+    请重新采样几个问题的 similarity_search_with_score 分数、重新校准这个阈值。"""
     global 对话历史
 
     # ① 查询理解(结合历史)
