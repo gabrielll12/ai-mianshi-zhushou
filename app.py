@@ -45,7 +45,7 @@ client = OpenAI(
 #         因为控制台当前只能申请到 vision 版本。它的调用接口与纯文本 Embedding
 #         不同(专用路径 + input 需包成 {"type":"text","text":...} 格式),
 #         下面的 方舟Embedding 类已做适配。填你自己的 ep- 开头接入点 ID(不是密码)。
-向量化接入点ID = "ep-20260711105724-q6sl5"
+向量化接入点ID = "在这里填入你的_Embedding_接入点ID"
 
 # 火山引擎方舟基础地址(与文本生成同一个 base_url)
 方舟基础地址 = "https://ark.cn-beijing.volces.com/api/v3"
@@ -87,8 +87,13 @@ class 方舟Embedding(Embeddings):
                 f"接入点={self.接入点},返回={resp.text[:500]}"
             )
         data = resp.json()
-        # 返回结构:{"data": [ {"object":"embedding", "embedding": [[...]]} ]}
-        emb = data["data"][0]["embedding"]
+        # 兼容火山两种返回结构:
+        #   多模态接口:data["data"] 是字典 -> {"embedding": [...]}
+        #   标准接口:  data["data"] 是列表 -> [{"embedding": [...]}]
+        节点 = data["data"]
+        if isinstance(节点, list):
+            节点 = 节点[0]
+        emb = 节点["embedding"]
         # embedding 可能是双层数组 [[...]],取内层那一维
         if emb and isinstance(emb[0], list):
             emb = emb[0]
